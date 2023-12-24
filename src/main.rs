@@ -1,25 +1,23 @@
+mod free_cam;
+mod mesh;
+
+use std::{mem, path::PathBuf};
+
 use cocoa::{appkit::NSView, base::id as cocoa_id};
 use core_graphics_types::geometry::CGSize;
-use std::collections::HashSet;
-use std::ffi::c_void;
-
-use dolly::glam::{Mat4, Quat, Vec3};
-use dolly::prelude::{CameraRig, LeftHanded, Position, Smooth, YawPitch};
+use dolly::glam::Mat4;
 use metal::*;
 use objc::{rc::autoreleasepool, runtime::YES};
-use std::mem;
-use std::path::PathBuf;
-
-use winit::dpi::LogicalSize;
-use winit::event::{DeviceEvent, ElementState, VirtualKeyCode};
-use winit::event_loop::EventLoop;
 use winit::{
-    event::{Event, WindowEvent},
-    event_loop::ControlFlow,
+    dpi::LogicalSize,
+    event::{DeviceEvent, Event, VirtualKeyCode, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    platform::macos::WindowExtMacOS,
+    window::WindowBuilder,
 };
 
-use winit::platform::macos::WindowExtMacOS;
-use winit::window::{CursorGrabMode, WindowBuilder};
+use crate::free_cam::FreeCam;
+use crate::mesh::MeshBuffers;
 
 fn prepare_render_pass_descriptor(descriptor: &RenderPassDescriptorRef, texture: &TextureRef) {
     let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
@@ -41,7 +39,7 @@ fn main() {
         .unwrap();
 
     window.set_cursor_visible(false);
-    //TODO: We have to lock the cursor in the middle
+    //TODO: We haves to lock the cursor in the middle
 
     let device = Device::system_default().expect("no device found");
 
@@ -56,8 +54,7 @@ fn main() {
         view.setLayer(mem::transmute(layer.as_ref()));
     }
 
-    let draw_size = window.inner_size();
-    layer.set_drawable_size(CGSize::new(draw_size.width as f64, draw_size.height as f64));
+    layer.set_drawable_size(CGSize::new(1600 as _, 900 as _));
 
     let library_path = PathBuf::from("shaders.metallib");
     let library = device.new_library_with_file(library_path).unwrap();
@@ -65,12 +62,14 @@ fn main() {
     let mesh = library.get_function("mesh_function", None).unwrap();
     let frag = library.get_function("fragment_function", None).unwrap();
 
-    let pipeline_state_desc = MeshRenderPipelineDescriptor::new();
+    let mut pipeline_state_desc = MeshRenderPipelineDescriptor::new();
     pipeline_state_desc
         .color_attachments()
         .object_at(0)
         .unwrap()
         .set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    pipeline_state_desc.set_depth_attachment_pixel_format(MTLPixelFormat::Depth32Float);
+
     pipeline_state_desc.set_mesh_function(Some(&mesh));
     pipeline_state_desc.set_fragment_function(Some(&frag));
 
@@ -80,99 +79,70 @@ fn main() {
 
     let command_queue = device.new_command_queue();
 
-    let mut camera_rig = CameraRig::<LeftHanded>::builder()
-        .with(Position::new(Vec3::Y))
-        .with(YawPitch::new())
-        .with(Smooth::new_position_rotation(1.0, 1.0))
-        .build();
+    //Create depth texture
+    let mut depth_texture_descriptor = TextureDescriptor::new();
+    depth_texture_descriptor.set_texture_type(MTLTextureType::D2);
+    depth_texture_descriptor.set_pixel_format(MTLPixelFormat::Depth32Float);
+    depth_texture_descriptor.set_width(1600);
+    depth_texture_descriptor.set_height(900);
+    depth_texture_descriptor.set_depth(1);
+    depth_texture_descriptor.set_mipmap_level_count(1);
+    depth_texture_descriptor.set_sample_count(1);
+    depth_texture_descriptor.set_array_length(1);
+    depth_texture_descriptor.set_resource_options(MTLResourceOptions::StorageModePrivate);
+    depth_texture_descriptor.set_usage(MTLTextureUsage::RenderTarget);
+
+    let depth_texture = device.new_texture(&depth_texture_descriptor);
+
+    let mut depth_stencil_descriptor = DepthStencilDescriptor::new();
+    depth_stencil_descriptor.set_depth_compare_function(MTLCompareFunction::LessEqual);
+    depth_stencil_descriptor.set_depth_write_enabled(true);
+
+    let depth_stencil_state = device.new_depth_stencil_state(&depth_stencil_descriptor);
+
+    let mut camera = FreeCam::new();
+
+    let mesh_buffers = unsafe { MeshBuffers::new(&device, "dragon.obj") }
+        .unwrap();
 
     events_loop.run(move |event, _, control_flow| {
-        let mut pressed_keys = HashSet::new();
-
         autoreleasepool(|| {
             *control_flow = ControlFlow::Poll;
 
             match event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                    WindowEvent::Resized(size) => {
-                        layer.set_drawable_size(CGSize::new(size.width as f64, size.height as f64));
-                    }
-                    WindowEvent::KeyboardInput { input, .. } => {
-                        if let Some(key_code) = input.virtual_keycode {
-                            if key_code == VirtualKeyCode::Escape {
-                                *control_flow = ControlFlow::ExitWithCode(0);
-                            }
+                Event::WindowEvent { event, .. } => {
+                    match event {
+                        WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                        WindowEvent::Resized(size) => {
+                            layer.set_drawable_size(CGSize::new(1600 as _, 900 as _));
+                            //TODO: size.width is wrong
+                            /*
+                            layer.set_drawable_size(CGSize::new(
+                                size.width as f64,
+                                size.height as f64,
+                            ));*/
+                        }
+                        WindowEvent::KeyboardInput { input, .. } => {
+                            if let Some(key_code) = input.virtual_keycode {
+                                if key_code == VirtualKeyCode::Escape {
+                                    *control_flow = ControlFlow::ExitWithCode(0);
+                                }
 
-                            match input.state {
-                                ElementState::Pressed => {
-                                    if !pressed_keys.contains(&key_code) {
-                                        pressed_keys.insert(key_code);
-                                    }
-                                }
-                                ElementState::Released => {
-                                    if pressed_keys.contains(&key_code) {
-                                        pressed_keys.remove(&key_code);
-                                    }
-                                }
+                                camera.key_event(input.state, key_code);
                             }
                         }
+                        _ => (),
                     }
-                    _ => (),
-                },
+                }
                 Event::MainEventsCleared => {
                     window.request_redraw();
                 }
                 Event::RedrawRequested(_) => {
                     let delta_time = 1. / 120.; //TODO:
 
-                    //Camera update
-                    let mut delta_pos = Vec3::ZERO;
-                    if pressed_keys.contains(&VirtualKeyCode::W) {
-                        delta_pos += Vec3::new(0.0, 0.0, 1.0);
-                    }
-                    if pressed_keys.contains(&VirtualKeyCode::A) {
-                        delta_pos += Vec3::new(-1.0, 0.0, 0.0);
-                    }
-                    if pressed_keys.contains(&VirtualKeyCode::S) {
-                        delta_pos += Vec3::new(0.0, 0.0, -1.0);
-                    }
-                    if pressed_keys.contains(&VirtualKeyCode::D) {
-                        delta_pos += Vec3::new(1.0, 0.0, 0.0);
-                    }
-                    delta_pos = camera_rig.final_transform.rotation * delta_pos * 2.0;
+                    camera.update(delta_time);
 
-                    if pressed_keys.contains(&VirtualKeyCode::Space) {
-                        delta_pos += Vec3::new(0.0, -1.0, 0.0);
-                    }
-                    if pressed_keys.contains(&VirtualKeyCode::LShift) {
-                        delta_pos += Vec3::new(0.0, 1.0, 0.0);
-                    }
-
-                    camera_rig
-                        .driver_mut::<Position>()
-                        .translate(-delta_pos * delta_time * 10.0);
-                    camera_rig.update(delta_time);
-
-                    let final_transform = camera_rig.final_transform;
-                    let fov = 90.0f32;
-
-                    let mut projection_matrix = Mat4::perspective_lh(
-                        fov.to_radians(),
-                        window.inner_size().width as f32 / window.inner_size().height as f32,
-                        0.1,
-                        1000.0,
-                    );
-                    projection_matrix.y_axis.y *= -1.0;
-
-                    let view_projection_matrix = projection_matrix
-                        * Mat4::look_at_lh(
-                            final_transform.position,
-                            final_transform.position + final_transform.forward(),
-                            final_transform.up(),
-                        )
-                        * Mat4::from_rotation_translation(Quat::IDENTITY, Vec3::new(0.0, 0.0, 1.0));
-
+                    let view_projection_matrix = camera.vp_matrix(&window);
                     //Metal commands
 
                     let drawable = match layer.next_drawable() {
@@ -184,9 +154,24 @@ fn main() {
 
                     prepare_render_pass_descriptor(&render_pass_descriptor, drawable.texture());
 
+                    let render_pass_depth_attachment_descriptor = render_pass_descriptor.depth_attachment().unwrap();
+                    render_pass_depth_attachment_descriptor.set_clear_depth(1.);
+                    render_pass_depth_attachment_descriptor.set_load_action(MTLLoadAction::Clear);
+                    render_pass_depth_attachment_descriptor.set_store_action(MTLStoreAction::DontCare);
+                    render_pass_depth_attachment_descriptor.set_texture(Some(&depth_texture));
+
                     let command_buffer = command_queue.new_command_buffer();
                     let encoder =
                         command_buffer.new_render_command_encoder(&render_pass_descriptor);
+
+                    encoder.set_viewport(MTLViewport {
+                        originX: 0.0,
+                        originY: 0.0,
+                        width: 1600.0,
+                        height: 900.0,
+                        znear: 0.1,
+                        zfar: 1000.0,
+                    });
 
                     encoder.set_mesh_bytes(
                         0,
@@ -195,10 +180,16 @@ fn main() {
                     );
 
                     encoder.set_render_pipeline_state(&pipeline_state);
-                    encoder.draw_mesh_threads(
+                    encoder.set_depth_stencil_state(&depth_stencil_state);
+
+                    encoder.set_mesh_buffer(1, Some(&mesh_buffers.vertex_buffer), 0);
+                    encoder.set_mesh_buffer(2, Some(&mesh_buffers.meshlet_buffer), 0);
+                    encoder.set_mesh_buffer(3, Some(&mesh_buffers.meshlet_data_buffer), 0);
+
+                    encoder.draw_mesh_threadgroups(
+                        MTLSize::new(((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger, 1, 1),
                         MTLSize::new(1, 1, 1),
-                        MTLSize::new(1, 1, 1),
-                        MTLSize::new(1, 1, 1),
+                        MTLSize::new(32, 1, 1),
                     );
 
                     encoder.end_encoding();
@@ -208,9 +199,7 @@ fn main() {
                 }
                 Event::DeviceEvent { event, .. } => {
                     if let DeviceEvent::MouseMotion { delta } = event {
-                        camera_rig
-                            .driver_mut::<YawPitch>()
-                            .rotate_yaw_pitch(0.3 * delta.0 as f32, -0.3 * delta.1 as f32);
+                        camera.mouse_movement(delta);
                     }
                 }
                 _ => {}

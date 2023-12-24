@@ -1,5 +1,4 @@
-use std::fs;
-use std::process::Command;
+use std::{fs, process::Command};
 
 fn main() {
     let mut output = Command::new("xcrun")
