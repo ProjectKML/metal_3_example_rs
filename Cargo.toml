@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 core-graphics-types = "0.1.3"
+dolly = "0.4.2"
 objc = "0.2.7"
-hassle-rs = "0.11.0"
 metal = "0.27.0"
 cocoa = "0.25.0"
 winit = "0.27"
