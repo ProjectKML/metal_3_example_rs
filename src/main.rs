@@ -24,7 +24,7 @@ fn prepare_render_pass_descriptor(descriptor: &RenderPassDescriptorRef, texture:
 
     color_attachment.set_texture(Some(texture));
     color_attachment.set_load_action(MTLLoadAction::Clear);
-    color_attachment.set_clear_color(MTLClearColor::new(0.2, 0.2, 0.25, 1.0));
+    color_attachment.set_clear_color(MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
     color_attachment.set_store_action(MTLStoreAction::Store);
 }
 
@@ -163,15 +163,6 @@ fn main() {
                     let command_buffer = command_queue.new_command_buffer();
                     let encoder =
                         command_buffer.new_render_command_encoder(&render_pass_descriptor);
-
-                    encoder.set_viewport(MTLViewport {
-                        originX: 0.0,
-                        originY: 0.0,
-                        width: 1600.0,
-                        height: 900.0,
-                        znear: 0.1,
-                        zfar: 1000.0,
-                    });
 
                     encoder.set_mesh_bytes(
                         0,
