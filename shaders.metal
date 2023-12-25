@@ -92,6 +92,12 @@ struct FSInput {
     float3 meshlet_color [[attribute(2)]];
 };
 
-fragment half4 fragment_function(FSInput input [[stage_in]]) {
-    return half4(half3(input.meshlet_color), 1.0);
+fragment half4 fragment_function(FSInput input [[stage_in]],
+    texture2d<half> color_texture [[ texture(0) ]]) {
+    constexpr sampler texture_sampler (mag_filter::linear, min_filter::linear);
+    const half4 color_sample = color_texture.sample(texture_sampler,
+        float2(input.tex_coord.x, 1.0 - input.tex_coord.y));
+
+    return color_sample;
+    //return half4(half3(input.meshlet_color), 1.0);
 }

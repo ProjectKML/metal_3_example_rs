@@ -12,6 +12,7 @@ use winit::{
 };
 
 pub const FIELD_OF_VIEW: f32 = 90.;
+pub const SPEED: f32 = 0.1;
 
 pub struct FreeCam {
     camera_rig: CameraRig<LeftHanded>,
@@ -35,24 +36,24 @@ impl FreeCam {
     pub fn update(&mut self, delta_time: f32) {
         let mut delta_pos = Vec3::ZERO;
         if self.pressed_keys.contains(&VirtualKeyCode::W) {
-            delta_pos -= Vec3::new(0.0, 0.0, 1.0);
+            delta_pos -= Vec3::new(0.0, 0.0, SPEED);
         }
         if self.pressed_keys.contains(&VirtualKeyCode::A) {
-            delta_pos -= Vec3::new(-1.0, 0.0, 0.0);
+            delta_pos -= Vec3::new(-SPEED, 0.0, 0.0);
         }
         if self.pressed_keys.contains(&VirtualKeyCode::S) {
-            delta_pos -= Vec3::new(0.0, 0.0, -1.0);
+            delta_pos -= Vec3::new(0.0, 0.0, -SPEED);
         }
         if self.pressed_keys.contains(&VirtualKeyCode::D) {
-            delta_pos -= Vec3::new(1.0, 0.0, 0.0);
+            delta_pos -= Vec3::new(SPEED, 0.0, 0.0);
         }
         delta_pos = self.camera_rig.final_transform.rotation * delta_pos * 2.0;
 
         if self.pressed_keys.contains(&VirtualKeyCode::Space) {
-            delta_pos += Vec3::new(0.0, -1.0, 0.0);
+            delta_pos += Vec3::new(0.0, -SPEED, 0.0);
         }
         if self.pressed_keys.contains(&VirtualKeyCode::LShift) {
-            delta_pos += Vec3::new(0.0, 1.0, 0.0);
+            delta_pos += Vec3::new(0.0, SPEED, 0.0);
         }
 
         self.camera_rig

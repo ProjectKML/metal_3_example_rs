@@ -1,5 +1,6 @@
 mod free_cam;
 mod mesh;
+mod texture;
 
 use std::{mem, path::PathBuf};
 
@@ -18,6 +19,7 @@ use winit::{
 
 use crate::free_cam::FreeCam;
 use crate::mesh::MeshBuffers;
+use crate::texture::ModelTexture;
 
 fn prepare_render_pass_descriptor(descriptor: &RenderPassDescriptorRef, texture: &TextureRef) {
     let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
@@ -102,8 +104,10 @@ fn main() {
 
     let mut camera = FreeCam::new();
 
-    let mesh_buffers = unsafe { MeshBuffers::new(&device, "dragon.obj") }
+    let mesh_buffers = unsafe { MeshBuffers::new(&device, "angel.obj") }
         .unwrap();
+
+    let texture = ModelTexture::new(&device, "angel.png");
 
     events_loop.run(move |event, _, control_flow| {
         autoreleasepool(|| {
@@ -176,6 +180,8 @@ fn main() {
                     encoder.set_mesh_buffer(1, Some(&mesh_buffers.vertex_buffer), 0);
                     encoder.set_mesh_buffer(2, Some(&mesh_buffers.meshlet_buffer), 0);
                     encoder.set_mesh_buffer(3, Some(&mesh_buffers.meshlet_data_buffer), 0);
+
+                    encoder.set_fragment_texture(0, Some(&texture.texture));
 
                     encoder.draw_mesh_threadgroups(
                         MTLSize::new(((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger, 1, 1),
