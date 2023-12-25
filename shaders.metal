@@ -42,7 +42,8 @@ struct VertexOut {
 };
 
 struct MeshUniforms {
-    float4x4 view_projection_matrix;
+    float4x4 mvp_matrix;
+    uint32_t render_type;
 };
 
 using mesh_t = mesh<VertexOut, void, 64, 124, topology::triangle>;
@@ -71,7 +72,7 @@ using mesh_t = mesh<VertexOut, void, 64, 124, topology::triangle>;
         const auto vertex_index = meshlet_data[meshlet.data_offset + i];
         const auto current_vertex = vertices[vertex_index];
 
-        v.position = uniforms.view_projection_matrix * float4(current_vertex.posX, current_vertex.posY, current_vertex.posZ, 1.0);
+        v.position = uniforms.mvp_matrix * float4(current_vertex.posX, current_vertex.posY, current_vertex.posZ, 1.0);
         v.tex_coord = float2(current_vertex.texX, current_vertex.texY);
         v.normal = float3(current_vertex.nx, current_vertex.ny, current_vertex.nz);
         v.meshlet_color = meshlet_color;
@@ -93,11 +94,11 @@ struct FSInput {
 };
 
 fragment half4 fragment_function(FSInput input [[stage_in]],
-    texture2d<half> color_texture [[ texture(0) ]]) {
+    texture2d<half> color_texture [[ texture(0) ]],
+    constant MeshUniforms& uniforms [[buffer(0)]]) {
     constexpr sampler texture_sampler (mag_filter::linear, min_filter::linear);
     const half4 color_sample = color_texture.sample(texture_sampler,
         float2(input.tex_coord.x, 1.0 - input.tex_coord.y));
 
-    return color_sample;
-    //return half4(half3(input.meshlet_color), 1.0);
+    return uniforms.render_type == 0 ? color_sample : half4(half3(input.meshlet_color), 1.0);
 }

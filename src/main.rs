@@ -16,10 +16,17 @@ use winit::{
     platform::macos::WindowExtMacOS,
     window::WindowBuilder,
 };
+use winit::window::Window;
 
 use crate::free_cam::FreeCam;
 use crate::mesh::MeshBuffers;
 use crate::texture::ModelTexture;
+
+#[repr(C)]
+struct UniformData {
+    view_projection_matrix: Mat4,
+    render_type: u32
+}
 
 fn prepare_render_pass_descriptor(descriptor: &RenderPassDescriptorRef, texture: &TextureRef) {
     let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
@@ -104,6 +111,11 @@ fn main() {
 
     let mut camera = FreeCam::new();
 
+    let mut uniform_data = UniformData {
+        view_projection_matrix: camera.vp_matrix(&window),
+        render_type: 0,
+    };
+
     let mesh_buffers = unsafe { MeshBuffers::new(&device, "angel.obj") }
         .unwrap();
 
@@ -112,6 +124,8 @@ fn main() {
     events_loop.run(move |event, _, control_flow| {
         autoreleasepool(|| {
             *control_flow = ControlFlow::Poll;
+
+            uniform_data.view_projection_matrix = camera.vp_matrix(&window);
 
             match event {
                 Event::WindowEvent { event, .. } => {
@@ -130,6 +144,10 @@ fn main() {
                             if let Some(key_code) = input.virtual_keycode {
                                 if key_code == VirtualKeyCode::Escape {
                                     *control_flow = ControlFlow::ExitWithCode(0);
+                                } else if key_code == VirtualKeyCode::Key1 {
+                                    uniform_data.render_type = 0;
+                                } else if key_code == VirtualKeyCode::Key2 {
+                                    uniform_data.render_type = 1;
                                 }
 
                                 camera.key_event(input.state, key_code);
@@ -146,7 +164,6 @@ fn main() {
 
                     camera.update(delta_time);
 
-                    let view_projection_matrix = camera.vp_matrix(&window);
                     //Metal commands
 
                     let drawable = match layer.next_drawable() {
@@ -170,8 +187,14 @@ fn main() {
 
                     encoder.set_mesh_bytes(
                         0,
-                        mem::size_of::<Mat4>() as _,
-                        &view_projection_matrix as *const _ as *const _,
+                        mem::size_of::<UniformData>() as _,
+                        &uniform_data as *const _ as *const _,
+                    );
+
+                    encoder.set_fragment_bytes(
+                        0,
+                        mem::size_of::<UniformData>() as _,
+                        &uniform_data as *const _ as *const _
                     );
 
                     encoder.set_render_pipeline_state(&pipeline_state);
