@@ -116,10 +116,10 @@ fn main() {
         render_type: 0,
     };
 
-    let mesh_buffers = unsafe { MeshBuffers::new(&device, "angel.obj") }
+    let mesh_buffers = unsafe { MeshBuffers::new(&device, "shepherd.obj") }
         .unwrap();
 
-    let texture = ModelTexture::new(&device, "angel.png");
+    let texture = ModelTexture::new(&device, "shepherd.png");
 
     events_loop.run(move |event, _, control_flow| {
         autoreleasepool(|| {
