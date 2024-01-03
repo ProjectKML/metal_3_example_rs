@@ -1,12 +1,13 @@
 mod free_cam;
 mod mesh;
 mod texture;
+mod indirect_command;
 
 use std::{mem, path::PathBuf};
 
 use cocoa::{appkit::NSView, base::id as cocoa_id};
 use core_graphics_types::geometry::CGSize;
-use dolly::glam::Mat4;
+use dolly::glam::{Mat4, Vec3};
 use metal::*;
 use objc::{rc::autoreleasepool, runtime::YES};
 use winit::{
@@ -160,7 +161,7 @@ fn main() {
                     window.request_redraw();
                 }
                 Event::RedrawRequested(_) => {
-                    let delta_time = 1. / 120.; //TODO:
+                    let delta_time = 1. / 60.; //TODO:
 
                     camera.update(delta_time);
 
@@ -205,6 +206,28 @@ fn main() {
                     encoder.set_mesh_buffer(3, Some(&mesh_buffers.meshlet_data_buffer), 0);
 
                     encoder.set_fragment_texture(0, Some(&texture.texture));
+
+                    encoder.draw_mesh_threadgroups(
+                        MTLSize::new(((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger, 1, 1),
+                        MTLSize::new(1, 1, 1),
+                        MTLSize::new(32, 1, 1),
+                    );
+
+                    uniform_data.view_projection_matrix = uniform_data.view_projection_matrix * Mat4::from_translation(
+                        Vec3::new(1., 0., 0.,)
+                    );
+
+                    encoder.set_mesh_bytes(
+                        0,
+                        mem::size_of::<UniformData>() as _,
+                        &uniform_data as *const _ as *const _,
+                    );
+
+                    encoder.set_fragment_bytes(
+                        0,
+                        mem::size_of::<UniformData>() as _,
+                        &uniform_data as *const _ as *const _
+                    );
 
                     encoder.draw_mesh_threadgroups(
                         MTLSize::new(((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger, 1, 1),
