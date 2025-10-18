@@ -40,5 +40,5 @@ fn main() {
         );
     }
 
-    fs::remove_file("shaders.air");
+    fs::remove_file("shaders.air").unwrap();
 }

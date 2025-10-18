@@ -1,10 +1,11 @@
-use std::{mem, path::Path, slice, sync::Arc};
+use std::{mem, path::Path, ptr::NonNull};
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
 use meshopt::VertexDataAdapter;
-use metal::{Buffer, Device, MTLResourceOptions};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{MTLBuffer, MTLDevice, MTLResourceOptions};
 
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(C)]
@@ -152,7 +153,8 @@ impl Mesh {
                             .triangles
                             .get(triangle_offset + 3)
                             .copied()
-                            .unwrap_or_default() as u32) << 24;
+                            .unwrap_or_default() as u32)
+                            << 24;
                     index += 1;
                 }
 
@@ -174,33 +176,42 @@ impl Mesh {
 
 #[derive(Clone)]
 pub struct MeshBuffers {
-    pub vertex_buffer: Buffer,
-    pub meshlet_buffer: Buffer,
-    pub meshlet_data_buffer: Buffer,
+    pub vertex_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub meshlet_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub meshlet_data_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub num_meshlets: usize,
 }
 
 impl MeshBuffers {
-    pub unsafe fn new(device: &Device, path: impl AsRef<Path>) -> Result<Self> {
-        let mesh = Mesh::new(path)?;
+    pub unsafe fn new(
+        device: &ProtocolObject<dyn MTLDevice>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let mut mesh = Mesh::new(path)?;
 
-        let vertex_buffer = device.new_buffer_with_data(
-            mesh.vertices.as_ptr() as *const _,
-            (mesh.vertices.len() * mem::size_of::<Vertex>()) as _,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let vertex_buffer = device
+            .newBufferWithBytes_length_options(
+                NonNull::new(mesh.vertices.as_mut_ptr().cast()).unwrap(),
+                (mesh.vertices.len() * mem::size_of::<Vertex>()) as _,
+                MTLResourceOptions::StorageModeShared,
+            )
+            .unwrap();
 
-        let meshlet_buffer = device.new_buffer_with_data(
-            mesh.meshlets.as_ptr() as *const _,
-            (mesh.meshlets.len() * mem::size_of::<Meshlet>()) as _,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let meshlet_buffer = device
+            .newBufferWithBytes_length_options(
+                NonNull::new(mesh.meshlets.as_mut_ptr().cast()).unwrap(),
+                (mesh.meshlets.len() * mem::size_of::<Meshlet>()) as _,
+                MTLResourceOptions::StorageModeShared,
+            )
+            .unwrap();
 
-        let meshlet_data_buffer = device.new_buffer_with_data(
-            mesh.meshlet_data.as_ptr() as *const _,
-            (mesh.meshlet_data.len() * mem::size_of::<u32>()) as _,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let meshlet_data_buffer = device
+            .newBufferWithBytes_length_options(
+                NonNull::new(mesh.meshlet_data.as_mut_ptr().cast()).unwrap(),
+                (mesh.meshlet_data.len() * mem::size_of::<u32>()) as _,
+                MTLResourceOptions::StorageModeShared,
+            )
+            .unwrap();
 
         Ok(Self {
             vertex_buffer,

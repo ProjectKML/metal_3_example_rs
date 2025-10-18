@@ -1,252 +1,326 @@
 mod free_cam;
 mod mesh;
 mod texture;
-mod indirect_command;
 
-use std::{mem, path::PathBuf};
+use std::{fs, mem, ptr::NonNull};
 
-use cocoa::{appkit::NSView, base::id as cocoa_id};
-use core_graphics_types::geometry::CGSize;
+use dispatch2::{dispatch_block_t, DispatchData};
 use dolly::glam::{Mat4, Vec3};
-use metal::*;
-use objc::{rc::autoreleasepool, runtime::YES};
-use winit::{
-    dpi::LogicalSize,
-    event::{DeviceEvent, Event, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    platform::macos::WindowExtMacOS,
-    window::WindowBuilder,
+use objc2::{
+    ffi::NSUInteger,
+    rc::{autoreleasepool, Retained},
+    runtime::{MessageReceiver, ProtocolObject},
 };
-use winit::window::Window;
+use objc2_core_foundation::CGSize;
+use objc2_foundation::NSString;
+use objc2_metal::{
+    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCompareFunction,
+    MTLCreateSystemDefaultDevice, MTLDepthStencilDescriptor, MTLDevice, MTLDrawable, MTLLibrary,
+    MTLLoadAction, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLPixelFormat,
+    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLResourceOptions, MTLSize, MTLStoreAction,
+    MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
+};
+use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use sdl3::{
+    event::{Event, WindowEvent},
+    keyboard::Keycode,
+    sys::{
+        metal::{SDL_Metal_CreateView, SDL_Metal_DestroyView, SDL_Metal_GetLayer},
+        mouse::{SDL_HideCursor, SDL_SetWindowRelativeMouseMode, SDL_ShowCursor},
+        video::SDL_SetWindowMouseGrab,
+    },
+};
 
-use crate::free_cam::FreeCam;
-use crate::mesh::MeshBuffers;
-use crate::texture::ModelTexture;
+use crate::{free_cam::FreeCam, mesh::MeshBuffers, texture::ModelTexture};
 
 #[repr(C)]
 struct UniformData {
     view_projection_matrix: Mat4,
-    render_type: u32
+    render_type: u32,
 }
 
-fn prepare_render_pass_descriptor(descriptor: &RenderPassDescriptorRef, texture: &TextureRef) {
-    let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
-
-    color_attachment.set_texture(Some(texture));
-    color_attachment.set_load_action(MTLLoadAction::Clear);
-    color_attachment.set_clear_color(MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
-    color_attachment.set_store_action(MTLStoreAction::Store);
+fn prepare_render_pass_descriptor(
+    descriptor: &MTLRenderPassDescriptor,
+    texture: &ProtocolObject<dyn MTLTexture>,
+) {
+    unsafe {
+        let color_attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
+        color_attachment.setTexture(Some(texture));
+        color_attachment.setLoadAction(MTLLoadAction::Clear);
+        color_attachment.setClearColor(MTLClearColor {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+            alpha: 1.0,
+        });
+        color_attachment.setStoreAction(MTLStoreAction::Store);
+    }
 }
 
 fn main() {
-    let events_loop = EventLoop::new();
-    let size = LogicalSize::new(1600, 900);
+    autoreleasepool(|_| {
+        unsafe {
+            let sdl = sdl3::init().unwrap();
+            let video_subsystem = sdl.video().unwrap();
 
-    let window = WindowBuilder::new()
-        .with_inner_size(size)
-        .with_title("Metal 3 Example 🦀".to_string())
-        .build(&events_loop)
-        .unwrap();
+            let window = video_subsystem
+                .window("Metal Example", 2560, 1440)
+                .position_centered()
+                .resizable()
+                .build()
+                .unwrap();
 
-    window.set_cursor_visible(false);
-    //TODO: We haves to lock the cursor in the middle
+            SDL_HideCursor();
+            SDL_SetWindowMouseGrab(window.raw(), true);
+            SDL_SetWindowRelativeMouseMode(window.raw(), true);
 
-    let device = Device::system_default().expect("no device found");
+            let mut event_pump = sdl.event_pump().unwrap();
 
-    let layer = MetalLayer::new();
-    layer.set_device(&device);
-    layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-    layer.set_presents_with_transaction(false);
+            let mut running = true;
 
-    unsafe {
-        let view = window.ns_view() as cocoa_id;
-        view.setWantsLayer(YES);
-        view.setLayer(mem::transmute(layer.as_ref()));
-    }
+            std::env::set_var("MTL_DEBUG_LAYER", "1");
+            std::env::set_var("MTL_LOG_LEVEL", "4");
 
-    layer.set_drawable_size(CGSize::new(1600 as _, 900 as _));
+            let device = MTLCreateSystemDefaultDevice().unwrap();
 
-    let library_path = PathBuf::from("shaders.metallib");
-    let library = device.new_library_with_file(library_path).unwrap();
+            let view = SDL_Metal_CreateView(window.raw());
+            let layer = SDL_Metal_GetLayer(view);
 
-    let mesh = library.get_function("mesh_function", None).unwrap();
-    let frag = library.get_function("fragment_function", None).unwrap();
+            let layer: Retained<CAMetalLayer> = {
+                let ptr = layer as *mut CAMetalLayer;
+                Retained::retain(ptr).expect("Failed to get metal layer")
+            };
 
-    let mut pipeline_state_desc = MeshRenderPipelineDescriptor::new();
-    pipeline_state_desc
-        .color_attachments()
-        .object_at(0)
-        .unwrap()
-        .set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-    pipeline_state_desc.set_depth_attachment_pixel_format(MTLPixelFormat::Depth32Float);
+            layer.setDevice(Some(&device));
+            layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+            layer.setPresentsWithTransaction(false);
+            layer.setDrawableSize(CGSize::new(window.size().0 as _, window.size().1 as _));
 
-    pipeline_state_desc.set_mesh_function(Some(&mesh));
-    pipeline_state_desc.set_fragment_function(Some(&frag));
+            let library_content = fs::read("shaders.metallib").unwrap();
 
-    let pipeline_state = device
-        .new_mesh_render_pipeline_state(&pipeline_state_desc)
-        .unwrap();
+            let library = device
+                .newLibraryWithData_error(&DispatchData::new(
+                    NonNull::new(library_content.as_ptr() as _).unwrap(),
+                    library_content.len(),
+                    None,
+                    dispatch_block_t::default(),
+                ))
+                .unwrap();
 
-    let command_queue = device.new_command_queue();
+            let mesh = library
+                .newFunctionWithName(&NSString::from_str("mesh_function"))
+                .unwrap();
 
-    //Create depth texture
-    let mut depth_texture_descriptor = TextureDescriptor::new();
-    depth_texture_descriptor.set_texture_type(MTLTextureType::D2);
-    depth_texture_descriptor.set_pixel_format(MTLPixelFormat::Depth32Float);
-    depth_texture_descriptor.set_width(1600);
-    depth_texture_descriptor.set_height(900);
-    depth_texture_descriptor.set_depth(1);
-    depth_texture_descriptor.set_mipmap_level_count(1);
-    depth_texture_descriptor.set_sample_count(1);
-    depth_texture_descriptor.set_array_length(1);
-    depth_texture_descriptor.set_resource_options(MTLResourceOptions::StorageModePrivate);
-    depth_texture_descriptor.set_usage(MTLTextureUsage::RenderTarget);
+            let frag = library
+                .newFunctionWithName(&NSString::from_str("fragment_function"))
+                .unwrap();
 
-    let depth_texture = device.new_texture(&depth_texture_descriptor);
+            let pipeline_state_desc = MTLMeshRenderPipelineDescriptor::new();
+            pipeline_state_desc
+                .colorAttachments()
+                .objectAtIndexedSubscript(0)
+                .setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+            pipeline_state_desc.setDepthAttachmentPixelFormat(MTLPixelFormat::Depth32Float);
+            pipeline_state_desc.setMeshFunction(Some(&mesh));
+            pipeline_state_desc.setFragmentFunction(Some(&frag));
 
-    let mut depth_stencil_descriptor = DepthStencilDescriptor::new();
-    depth_stencil_descriptor.set_depth_compare_function(MTLCompareFunction::LessEqual);
-    depth_stencil_descriptor.set_depth_write_enabled(true);
+            let pipeline_state = device
+                .newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
+                    &pipeline_state_desc,
+                    MTLPipelineOption::empty(),
+                    None,
+                )
+                .unwrap();
 
-    let depth_stencil_state = device.new_depth_stencil_state(&depth_stencil_descriptor);
+            let command_queue = device.newCommandQueue().unwrap();
 
-    let mut camera = FreeCam::new();
+            //Create depth texture
+            let depth_texture_descriptor = MTLTextureDescriptor::new();
+            depth_texture_descriptor.setTextureType(MTLTextureType::Type2D);
+            depth_texture_descriptor.setPixelFormat(MTLPixelFormat::Depth32Float);
+            depth_texture_descriptor.setWidth(window.size().0 as _);
+            depth_texture_descriptor.setHeight(window.size().1 as _);
+            depth_texture_descriptor.setDepth(1);
+            depth_texture_descriptor.setMipmapLevelCount(1);
+            depth_texture_descriptor.setSampleCount(1);
+            depth_texture_descriptor.setArrayLength(1);
+            depth_texture_descriptor.setResourceOptions(MTLResourceOptions::StorageModePrivate);
+            depth_texture_descriptor.setUsage(MTLTextureUsage::RenderTarget);
 
-    let mut uniform_data = UniformData {
-        view_projection_matrix: camera.vp_matrix(&window),
-        render_type: 0,
-    };
+            let depth_texture = device
+                .newTextureWithDescriptor(&depth_texture_descriptor)
+                .unwrap();
 
-    let mesh_buffers = unsafe { MeshBuffers::new(&device, "shepherd.obj") }
-        .unwrap();
+            let depth_stencil_descriptor = MTLDepthStencilDescriptor::new();
+            depth_stencil_descriptor.setDepthCompareFunction(MTLCompareFunction::LessEqual);
+            depth_stencil_descriptor.setDepthWriteEnabled(true);
 
-    let texture = ModelTexture::new(&device, "shepherd.png");
+            let depth_stencil_state = device
+                .newDepthStencilStateWithDescriptor(&depth_stencil_descriptor)
+                .unwrap();
 
-    events_loop.run(move |event, _, control_flow| {
-        autoreleasepool(|| {
-            *control_flow = ControlFlow::Poll;
+            let mut camera = FreeCam::new();
 
-            uniform_data.view_projection_matrix = camera.vp_matrix(&window);
+            let mut uniform_data = UniformData {
+                view_projection_matrix: camera
+                    .vp_matrix(window.size().0 as f32 / window.size().1 as f32),
+                render_type: 0,
+            };
 
-            match event {
-                Event::WindowEvent { event, .. } => {
+            let mesh_buffers = unsafe { MeshBuffers::new(&device, "shepherd.obj") }.unwrap();
+
+            let texture = ModelTexture::new(&device, "shepherd.png");
+
+            while running {
+                for event in event_pump.poll_iter() {
                     match event {
-                        WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                        WindowEvent::Resized(size) => {
-                            layer.set_drawable_size(CGSize::new(1600 as _, 900 as _));
-                            //TODO: size.width is wrong
-                            /*
-                            layer.set_drawable_size(CGSize::new(
-                                size.width as f64,
-                                size.height as f64,
-                            ));*/
+                        Event::Quit { .. } => {
+                            running = false;
                         }
-                        WindowEvent::KeyboardInput { input, .. } => {
-                            if let Some(key_code) = input.virtual_keycode {
-                                if key_code == VirtualKeyCode::Escape {
-                                    *control_flow = ControlFlow::ExitWithCode(0);
-                                } else if key_code == VirtualKeyCode::Key1 {
+                        Event::Window { win_event, .. } => {
+                            match win_event {
+                                WindowEvent::Resized(width, height) => {
+                                    layer.setDrawableSize(CGSize::new(width as _, height as _));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Event::KeyDown { keycode, .. } => {
+                            if let Some(keycode) = keycode {
+                                if keycode == Keycode::Escape {
+                                    running = false;
+                                } else if keycode == Keycode::_1 {
                                     uniform_data.render_type = 0;
-                                } else if key_code == VirtualKeyCode::Key2 {
+                                } else if keycode == Keycode::_2 {
                                     uniform_data.render_type = 1;
                                 }
 
-                                camera.key_event(input.state, key_code);
+                                camera.key_event(true, keycode);
                             }
                         }
-                        _ => (),
+                        Event::KeyUp { keycode, .. } => {
+                            if let Some(keycode) = keycode {
+                                camera.key_event(false, keycode);
+                            }
+                        }
+                        Event::MouseMotion { xrel, yrel, .. } => {
+                            camera.mouse_movement((xrel, yrel));
+                        }
+                        _ => {}
                     }
                 }
-                Event::MainEventsCleared => {
-                    window.request_redraw();
-                }
-                Event::RedrawRequested(_) => {
-                    let delta_time = 1. / 60.; //TODO:
 
-                    camera.update(delta_time);
+                //Loop
 
-                    //Metal commands
+                let delta_time = 1. / 60.; //TODO:
 
-                    let drawable = match layer.next_drawable() {
-                        Some(drawable) => drawable,
-                        None => return,
-                    };
+                uniform_data.view_projection_matrix =
+                    camera.vp_matrix(window.size().0 as f32 / window.size().1 as f32);
 
-                    let render_pass_descriptor = RenderPassDescriptor::new();
+                camera.update(delta_time);
 
-                    prepare_render_pass_descriptor(&render_pass_descriptor, drawable.texture());
+                let drawable = match layer.nextDrawable() {
+                    Some(drawable) => drawable,
+                    None => continue,
+                };
 
-                    let render_pass_depth_attachment_descriptor = render_pass_descriptor.depth_attachment().unwrap();
-                    render_pass_depth_attachment_descriptor.set_clear_depth(1.);
-                    render_pass_depth_attachment_descriptor.set_load_action(MTLLoadAction::Clear);
-                    render_pass_depth_attachment_descriptor.set_store_action(MTLStoreAction::DontCare);
-                    render_pass_depth_attachment_descriptor.set_texture(Some(&depth_texture));
+                let render_pass_descriptor = MTLRenderPassDescriptor::new();
 
-                    let command_buffer = command_queue.new_command_buffer();
-                    let encoder =
-                        command_buffer.new_render_command_encoder(&render_pass_descriptor);
+                prepare_render_pass_descriptor(&render_pass_descriptor, &drawable.texture());
 
-                    encoder.set_mesh_bytes(
-                        0,
-                        mem::size_of::<UniformData>() as _,
-                        &uniform_data as *const _ as *const _,
-                    );
+                let render_pass_depth_attachment_descriptor =
+                    render_pass_descriptor.depthAttachment();
+                render_pass_depth_attachment_descriptor.setClearDepth(1.);
+                render_pass_depth_attachment_descriptor.setLoadAction(MTLLoadAction::Clear);
+                render_pass_depth_attachment_descriptor.setStoreAction(MTLStoreAction::DontCare);
+                render_pass_depth_attachment_descriptor.setTexture(Some(&depth_texture));
 
-                    encoder.set_fragment_bytes(
-                        0,
-                        mem::size_of::<UniformData>() as _,
-                        &uniform_data as *const _ as *const _
-                    );
+                let command_buffer = command_queue.commandBuffer().unwrap();
 
-                    encoder.set_render_pipeline_state(&pipeline_state);
-                    encoder.set_depth_stencil_state(&depth_stencil_state);
+                let encoder = command_buffer
+                    .renderCommandEncoderWithDescriptor(&render_pass_descriptor)
+                    .unwrap();
 
-                    encoder.set_mesh_buffer(1, Some(&mesh_buffers.vertex_buffer), 0);
-                    encoder.set_mesh_buffer(2, Some(&mesh_buffers.meshlet_buffer), 0);
-                    encoder.set_mesh_buffer(3, Some(&mesh_buffers.meshlet_data_buffer), 0);
+                encoder.setMeshBytes_length_atIndex(
+                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
+                    mem::size_of::<UniformData>() as _,
+                    0,
+                );
+                encoder.setFragmentBytes_length_atIndex(
+                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
+                    mem::size_of::<UniformData>() as _,
+                    0,
+                );
 
-                    encoder.set_fragment_texture(0, Some(&texture.texture));
+                encoder.setRenderPipelineState(&pipeline_state);
+                encoder.setDepthStencilState(Some(&depth_stencil_state));
 
-                    encoder.draw_mesh_threadgroups(
-                        MTLSize::new(((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger, 1, 1),
-                        MTLSize::new(1, 1, 1),
-                        MTLSize::new(32, 1, 1),
-                    );
+                encoder.setMeshBuffer_offset_atIndex(Some(&mesh_buffers.vertex_buffer), 0, 1);
+                encoder.setMeshBuffer_offset_atIndex(Some(&mesh_buffers.meshlet_buffer), 0, 2);
+                encoder.setMeshBuffer_offset_atIndex(Some(&mesh_buffers.meshlet_data_buffer), 0, 3);
 
-                    uniform_data.view_projection_matrix = uniform_data.view_projection_matrix * Mat4::from_translation(
-                        Vec3::new(1., 0., 0.,)
-                    );
+                encoder.setFragmentTexture_atIndex(Some(&texture.texture), 0);
 
-                    encoder.set_mesh_bytes(
-                        0,
-                        mem::size_of::<UniformData>() as _,
-                        &uniform_data as *const _ as *const _,
-                    );
+                encoder.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
+                    MTLSize {
+                        width: ((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger,
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: 32,
+                        height: 1,
+                        depth: 1,
+                    },
+                );
 
-                    encoder.set_fragment_bytes(
-                        0,
-                        mem::size_of::<UniformData>() as _,
-                        &uniform_data as *const _ as *const _
-                    );
+                uniform_data.view_projection_matrix = uniform_data.view_projection_matrix
+                    * Mat4::from_translation(Vec3::new(1., 0., 0.));
 
-                    encoder.draw_mesh_threadgroups(
-                        MTLSize::new(((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger, 1, 1),
-                        MTLSize::new(1, 1, 1),
-                        MTLSize::new(32, 1, 1),
-                    );
+                encoder.setMeshBytes_length_atIndex(
+                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
+                    mem::size_of::<UniformData>() as _,
+                    0,
+                );
+                encoder.setFragmentBytes_length_atIndex(
+                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
+                    mem::size_of::<UniformData>() as _,
+                    0,
+                );
 
-                    encoder.end_encoding();
+                encoder.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
+                    MTLSize {
+                        width: ((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger,
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: 32,
+                        height: 1,
+                        depth: 1,
+                    },
+                );
 
-                    command_buffer.present_drawable(&drawable);
-                    command_buffer.commit();
-                }
-                Event::DeviceEvent { event, .. } => {
-                    if let DeviceEvent::MouseMotion { delta } = event {
-                        camera.mouse_movement(delta);
-                    }
-                }
-                _ => {}
+                encoder.endEncoding();
+
+                let drawable: Retained<ProtocolObject<dyn MTLDrawable>> =
+                    Retained::cast_unchecked(drawable);
+
+                command_buffer.presentDrawable(&drawable);
+                command_buffer.commit();
             }
-        });
+
+            SDL_Metal_DestroyView(view);
+        }
     });
 }

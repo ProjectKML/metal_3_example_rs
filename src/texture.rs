@@ -1,30 +1,32 @@
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
+use std::{fs::File, io::BufReader, path::Path, ptr::NonNull};
+
 use image::ImageFormat;
-use metal::{Device, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, Texture, TextureDescriptor};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{
+    MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLTexture, MTLTextureDescriptor,
+};
 
 pub struct ModelTexture {
-    pub texture: Texture
+    pub texture: Retained<ProtocolObject<dyn MTLTexture>>,
 }
 
 impl ModelTexture {
-    pub fn new(device: &Device, path: impl AsRef<Path>) -> Self {
+    pub unsafe fn new(device: &ProtocolObject<dyn MTLDevice>, path: impl AsRef<Path>) -> Self {
         let file = File::open(path).unwrap();
-        let image = image::load(BufReader::new(file),
-            ImageFormat::Png)
+        let image = image::load(BufReader::new(file), ImageFormat::Png).unwrap();
+
+        let mut rgba8 = image.into_rgba8();
+
+        let texture_descriptor = MTLTextureDescriptor::new();
+        texture_descriptor.setWidth(rgba8.width() as _);
+        texture_descriptor.setHeight(rgba8.height() as _);
+        texture_descriptor.setPixelFormat(MTLPixelFormat::RGBA8Unorm);
+
+        let texture = device
+            .newTextureWithDescriptor(&texture_descriptor)
             .unwrap();
 
-        let rgba8 = image.into_rgba8();
-
-        let mut texture_descriptor = TextureDescriptor::new();
-        texture_descriptor.set_width(rgba8.width() as _);
-        texture_descriptor.set_height(rgba8.height() as _);
-        texture_descriptor.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
-
-        let texture = device.new_texture(&texture_descriptor);
-
-        texture.replace_region(
+        texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
             MTLRegion {
                 origin: MTLOrigin { x: 0, y: 0, z: 0 },
                 size: MTLSize {
@@ -34,12 +36,10 @@ impl ModelTexture {
                 },
             },
             0,
-            rgba8.as_ptr() as *const _,
+            NonNull::new(rgba8.as_mut_ptr().cast()).unwrap(),
             (rgba8.width() * 4) as _,
         );
 
-        Self {
-            texture
-        }
+        Self { texture }
     }
 }

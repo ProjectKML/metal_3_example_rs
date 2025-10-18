@@ -6,17 +6,14 @@ use dolly::{
     handedness::LeftHanded,
     prelude::CameraRig,
 };
-use winit::{
-    event::{ElementState, VirtualKeyCode},
-    window::Window,
-};
+use sdl3::keyboard::Keycode;
 
 pub const FIELD_OF_VIEW: f32 = 90.;
 pub const SPEED: f32 = 0.1;
 
 pub struct FreeCam {
     camera_rig: CameraRig<LeftHanded>,
-    pressed_keys: HashSet<VirtualKeyCode>,
+    pressed_keys: HashSet<Keycode>,
 }
 
 impl FreeCam {
@@ -35,24 +32,24 @@ impl FreeCam {
 
     pub fn update(&mut self, delta_time: f32) {
         let mut delta_pos = Vec3::ZERO;
-        if self.pressed_keys.contains(&VirtualKeyCode::W) {
+        if self.pressed_keys.contains(&Keycode::W) {
             delta_pos -= Vec3::new(0.0, 0.0, SPEED);
         }
-        if self.pressed_keys.contains(&VirtualKeyCode::A) {
+        if self.pressed_keys.contains(&Keycode::A) {
             delta_pos -= Vec3::new(-SPEED, 0.0, 0.0);
         }
-        if self.pressed_keys.contains(&VirtualKeyCode::S) {
+        if self.pressed_keys.contains(&Keycode::S) {
             delta_pos -= Vec3::new(0.0, 0.0, -SPEED);
         }
-        if self.pressed_keys.contains(&VirtualKeyCode::D) {
+        if self.pressed_keys.contains(&Keycode::D) {
             delta_pos -= Vec3::new(SPEED, 0.0, 0.0);
         }
         delta_pos = self.camera_rig.final_transform.rotation * delta_pos * 2.0;
 
-        if self.pressed_keys.contains(&VirtualKeyCode::Space) {
+        if self.pressed_keys.contains(&Keycode::Space) {
             delta_pos += Vec3::new(0.0, -SPEED, 0.0);
         }
-        if self.pressed_keys.contains(&VirtualKeyCode::LShift) {
+        if self.pressed_keys.contains(&Keycode::LShift) {
             delta_pos += Vec3::new(0.0, SPEED, 0.0);
         }
 
@@ -62,16 +59,11 @@ impl FreeCam {
         self.camera_rig.update(delta_time);
     }
 
-    pub fn vp_matrix(&self, window: &Window) -> Mat4 {
+    pub fn vp_matrix(&self, aspect: f32) -> Mat4 {
         let final_transform = self.camera_rig.final_transform;
         let fov = 90.0f32;
 
-        let mut projection_matrix = Mat4::perspective_lh(
-            fov.to_radians(),
-            1600. / 900.,
-            0.1,
-            1000.0,
-        );
+        let projection_matrix = Mat4::perspective_lh(fov.to_radians(), aspect, 0.1, 1000.0);
 
         projection_matrix
             * Mat4::look_at_lh(
@@ -82,23 +74,20 @@ impl FreeCam {
             * Mat4::from_rotation_translation(Quat::IDENTITY, Vec3::new(0.0, 0.0, 1.0))
     }
 
-    pub fn mouse_movement(&mut self, (x, y): (f64, f64)) {
+    pub fn mouse_movement(&mut self, (x, y): (f32, f32)) {
         self.camera_rig
             .driver_mut::<YawPitch>()
-            .rotate_yaw_pitch(0.3 * x as f32, 0.3 * y as f32);
+            .rotate_yaw_pitch(0.3 * x, 0.3 * y);
     }
 
-    pub fn key_event(&mut self, state: ElementState, key_code: VirtualKeyCode) {
-        match state {
-            ElementState::Pressed => {
-                if !self.pressed_keys.contains(&key_code) {
-                    self.pressed_keys.insert(key_code);
-                }
+    pub fn key_event(&mut self, down: bool, key_code: Keycode) {
+        if down {
+            if !self.pressed_keys.contains(&key_code) {
+                self.pressed_keys.insert(key_code);
             }
-            ElementState::Released => {
-                if self.pressed_keys.contains(&key_code) {
-                    self.pressed_keys.remove(&key_code);
-                }
+        } else {
+            if self.pressed_keys.contains(&key_code) {
+                self.pressed_keys.remove(&key_code);
             }
         }
     }
