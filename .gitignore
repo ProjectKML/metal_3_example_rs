@@ -4,3 +4,4 @@ target/
 *.tmp
 *.metallib
 *.dylib
+metal_3_example

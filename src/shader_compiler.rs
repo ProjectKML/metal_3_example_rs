@@ -1,6 +1,6 @@
 use std::{
     ffi::{CStr, CString},
-    fs,
+    fs, mem,
     ptr::NonNull,
 };
 
@@ -18,7 +18,7 @@ use metal_irconverter::{
 };
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_foundation::NSString;
-use objc2_metal::{MTLDevice, MTLFunction, MTLLibrary};
+use objc2_metal::{MTLBuffer, MTLDevice, MTLFunction, MTLLibrary, MTLSamplerState, MTLTexture};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ShaderKind {
@@ -118,6 +118,8 @@ pub fn compile(
             println!("-----------------------");
         }
 
+        println!();
+
         sys::IRShaderReflectionDestroy(reflection);
         sys::IRMetalLibBinaryDestroy(metal_lib);
         sys::IRObjectDestroy(dxil);
@@ -164,5 +166,47 @@ mod tests {
             "geometry_pixel",
             ShaderKind::Fragment,
         );
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct DescriptorTableEntry {
+    gpu_va: u64,
+    texture_view_id: u64,
+    metadata: u64,
+}
+
+impl DescriptorTableEntry {
+    pub fn texture(
+        texture: &ProtocolObject<dyn MTLTexture>,
+        min_lod_clamp: f32,
+        metadata: u32,
+    ) -> Self {
+        unsafe {
+            Self {
+                gpu_va: 0,
+                texture_view_id: mem::transmute(texture.gpuResourceID()),
+                metadata: min_lod_clamp.to_bits() as u64 | ((metadata as u64) << 32),
+            }
+        }
+    }
+
+    pub fn sampler(sampler: &ProtocolObject<dyn MTLSamplerState>, lod_bias: f32) -> Self {
+        unsafe {
+            Self {
+                gpu_va: mem::transmute(sampler.gpuResourceID()),
+                texture_view_id: 0,
+                metadata: lod_bias.to_bits() as u64,
+            }
+        }
+    }
+
+    pub fn buffer(buffer: &ProtocolObject<dyn MTLBuffer>, metadata: u64) -> Self {
+        Self {
+            gpu_va: buffer.gpuAddress(),
+            texture_view_id: 0,
+            metadata,
+        }
     }
 }

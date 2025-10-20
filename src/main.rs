@@ -16,8 +16,9 @@ use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCompareFunction,
     MTLCreateSystemDefaultDevice, MTLDepthStencilDescriptor, MTLDevice, MTLDrawable, MTLLibrary,
     MTLLoadAction, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLPixelFormat,
-    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLResourceOptions, MTLSize, MTLStoreAction,
-    MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
+    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderStages, MTLResourceOptions,
+    MTLResourceUsage, MTLSamplerDescriptor, MTLSize, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use sdl3::{
@@ -33,7 +34,7 @@ use sdl3::{
 use crate::{
     free_cam::FreeCam,
     mesh::MeshBuffers,
-    shader_compiler::{compile, ShaderKind},
+    shader_compiler::{compile, DescriptorTableEntry, ShaderKind},
     texture::ModelTexture,
 };
 
@@ -239,57 +240,70 @@ fn main() {
                     .renderCommandEncoderWithDescriptor(&render_pass_descriptor)
                     .unwrap();
 
+                let uniform_data_buffer = device
+                    .newBufferWithBytes_length_options(
+                        NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
+                        mem::size_of::<UniformData>() as _,
+                        MTLResourceOptions::StorageModeShared,
+                    )
+                    .unwrap();
+
+                let sampler_desc = MTLSamplerDescriptor::new();
+
+                let sampler = device.newSamplerStateWithDescriptor(&sampler_desc).unwrap();
+
+                let mut mesh_arguments = [
+                    DescriptorTableEntry::buffer(&mesh_buffers.vertex_buffer, 0),
+                    DescriptorTableEntry::buffer(&mesh_buffers.meshlet_buffer, 0),
+                    DescriptorTableEntry::buffer(&mesh_buffers.meshlet_data_buffer, 0),
+                    DescriptorTableEntry::buffer(&uniform_data_buffer, 0),
+                ];
+
+                let mut frag_arguments = [
+                    DescriptorTableEntry::texture(&texture.texture, 0., 0),
+                    DescriptorTableEntry::buffer(&uniform_data_buffer, 0),
+                    DescriptorTableEntry::sampler(&sampler, 0.),
+                ];
+
                 encoder.setMeshBytes_length_atIndex(
-                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
-                    mem::size_of::<UniformData>() as _,
-                    0,
+                    NonNull::new(mesh_arguments.as_mut_ptr().cast()).unwrap(),
+                    mem::size_of::<DescriptorTableEntry>() * 4,
+                    2,
                 );
                 encoder.setFragmentBytes_length_atIndex(
-                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
-                    mem::size_of::<UniformData>() as _,
-                    0,
+                    NonNull::new(frag_arguments.as_mut_ptr().cast()).unwrap(),
+                    mem::size_of::<DescriptorTableEntry>() * 3,
+                    2,
+                );
+
+                encoder.useResource_usage_stages(
+                    mesh_buffers.vertex_buffer.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh,
+                );
+                encoder.useResource_usage_stages(
+                    mesh_buffers.meshlet_buffer.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh,
+                );
+                encoder.useResource_usage_stages(
+                    mesh_buffers.meshlet_data_buffer.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh,
+                );
+                encoder.useResource_usage_stages(
+                    uniform_data_buffer.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh | MTLRenderStages::Fragment,
+                );
+                encoder.useResource_usage_stages(
+                    texture.texture.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Fragment,
                 );
 
                 encoder.setRenderPipelineState(&pipeline_state);
                 encoder.setDepthStencilState(Some(&depth_stencil_state));
-
-                encoder.setMeshBuffer_offset_atIndex(Some(&mesh_buffers.vertex_buffer), 0, 1);
-                encoder.setMeshBuffer_offset_atIndex(Some(&mesh_buffers.meshlet_buffer), 0, 2);
-                encoder.setMeshBuffer_offset_atIndex(Some(&mesh_buffers.meshlet_data_buffer), 0, 3);
-
-                encoder.setFragmentTexture_atIndex(Some(&texture.texture), 0);
-
-                encoder.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
-                    MTLSize {
-                        width: ((mesh_buffers.num_meshlets * 32 + 31) / 32) as NSUInteger,
-                        height: 1,
-                        depth: 1,
-                    },
-                    MTLSize {
-                        width: 1,
-                        height: 1,
-                        depth: 1,
-                    },
-                    MTLSize {
-                        width: 32,
-                        height: 1,
-                        depth: 1,
-                    },
-                );
-
-                uniform_data.view_projection_matrix = uniform_data.view_projection_matrix
-                    * Mat4::from_translation(Vec3::new(1., 0., 0.));
-
-                encoder.setMeshBytes_length_atIndex(
-                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
-                    mem::size_of::<UniformData>() as _,
-                    0,
-                );
-                encoder.setFragmentBytes_length_atIndex(
-                    NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
-                    mem::size_of::<UniformData>() as _,
-                    0,
-                );
 
                 encoder.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
                     MTLSize {
@@ -316,6 +330,7 @@ fn main() {
 
                 command_buffer.presentDrawable(&drawable);
                 command_buffer.commit();
+                command_buffer.waitUntilCompleted();
             }
 
             SDL_Metal_DestroyView(view);
