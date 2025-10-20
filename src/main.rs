@@ -6,6 +6,7 @@ mod texture;
 use std::{mem, ptr::NonNull};
 
 use dolly::glam::{Mat4, Vec3};
+use glam::{EulerRot, Quat};
 use objc2::{
     ffi::NSUInteger,
     rc::{autoreleasepool, Retained},
@@ -38,6 +39,7 @@ use crate::{
     texture::ModelTexture,
 };
 
+#[derive(Copy, Clone)]
 #[repr(C)]
 struct UniformData {
     view_projection_matrix: Mat4,
@@ -167,8 +169,11 @@ fn main() {
             };
 
             let mesh_buffers = unsafe { MeshBuffers::new(&device, "shepherd.obj") }.unwrap();
+            //TODO: we dont want to hardcode this in the future
+            let mesh_buffers2 = unsafe { MeshBuffers::new(&device, "angel.obj") }.unwrap();
 
             let texture = ModelTexture::new(&device, "shepherd.png");
+            let texture2 = ModelTexture::new(&device, "angel.png");
 
             while running {
                 for event in event_pump.poll_iter() {
@@ -216,6 +221,15 @@ fn main() {
                 uniform_data.view_projection_matrix =
                     camera.vp_matrix(window.size().0 as f32 / window.size().1 as f32);
 
+                let mut uniform_data2 = uniform_data;
+                uniform_data2.view_projection_matrix *= Mat4::from_rotation_translation(
+                    Quat::from_euler(EulerRot::XYZ, 0., 90.0f32.to_radians(), 0.),
+                    Vec3::new(0., 0., 0.5),
+                );
+
+                uniform_data.view_projection_matrix *= Mat4::from_scale(Vec3::new(2., 2., 2.))
+                    * Mat4::from_translation(Vec3::new(-0.1, -0.2, -0.1));
+
                 camera.update(delta_time);
 
                 let drawable = match layer.nextDrawable() {
@@ -243,6 +257,14 @@ fn main() {
                 let uniform_data_buffer = device
                     .newBufferWithBytes_length_options(
                         NonNull::new(&mut uniform_data as *mut _ as *mut _).unwrap(),
+                        mem::size_of::<UniformData>() as _,
+                        MTLResourceOptions::StorageModeShared,
+                    )
+                    .unwrap();
+
+                let uniform_data_buffer2 = device
+                    .newBufferWithBytes_length_options(
+                        NonNull::new(&mut uniform_data2 as *mut _ as *mut _).unwrap(),
                         mem::size_of::<UniformData>() as _,
                         MTLResourceOptions::StorageModeShared,
                     )
@@ -321,6 +343,76 @@ fn main() {
                         height: 1,
                         depth: 1,
                     },
+                );
+
+                //Render second hardcoded mesh xDD
+
+                let mut mesh_arguments = [
+                    DescriptorTableEntry::buffer(&mesh_buffers2.vertex_buffer, 0),
+                    DescriptorTableEntry::buffer(&mesh_buffers2.meshlet_buffer, 0),
+                    DescriptorTableEntry::buffer(&mesh_buffers2.meshlet_data_buffer, 0),
+                    DescriptorTableEntry::buffer(&uniform_data_buffer2, 0),
+                ];
+
+                let mut frag_arguments = [
+                    DescriptorTableEntry::texture(&texture2.texture, 0., 0),
+                    DescriptorTableEntry::buffer(&uniform_data_buffer2, 0),
+                    DescriptorTableEntry::sampler(&sampler, 0.),
+                ];
+
+                encoder.setMeshBytes_length_atIndex(
+                    NonNull::new(mesh_arguments.as_mut_ptr().cast()).unwrap(),
+                    mem::size_of::<DescriptorTableEntry>() * 4,
+                    2,
+                );
+                encoder.setFragmentBytes_length_atIndex(
+                    NonNull::new(frag_arguments.as_mut_ptr().cast()).unwrap(),
+                    mem::size_of::<DescriptorTableEntry>() * 3,
+                    2,
+                );
+
+                encoder.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
+                    MTLSize {
+                        width: ((mesh_buffers2.num_meshlets * 32 + 31) / 32) as NSUInteger,
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: 32,
+                        height: 1,
+                        depth: 1,
+                    },
+                );
+
+                encoder.useResource_usage_stages(
+                    mesh_buffers2.vertex_buffer.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh,
+                );
+                encoder.useResource_usage_stages(
+                    mesh_buffers2.meshlet_buffer.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh,
+                );
+                encoder.useResource_usage_stages(
+                    mesh_buffers2.meshlet_data_buffer.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh,
+                );
+                encoder.useResource_usage_stages(
+                    uniform_data_buffer2.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Mesh | MTLRenderStages::Fragment,
+                );
+                encoder.useResource_usage_stages(
+                    texture2.texture.as_ref(),
+                    MTLResourceUsage::Read,
+                    MTLRenderStages::Fragment,
                 );
 
                 encoder.endEncoding();
