@@ -1,13 +1,19 @@
-use std::{ffi::CString, fs, ptr::NonNull};
+use std::{
+    ffi::{CStr, CString},
+    fs,
+    ptr::NonNull,
+};
 
 use dispatch2::{dispatch_block_t, DispatchData};
 use hassle_rs::compile_hlsl;
 use metal_irconverter::{
     sys,
     sys::{
-        IRShaderStage, IRShaderStage_IRShaderStageAmplification,
-        IRShaderStage_IRShaderStageCompute, IRShaderStage_IRShaderStageFragment,
-        IRShaderStage_IRShaderStageMesh, IRShaderStage_IRShaderStageVertex,
+        IRObjectGetReflection, IRShaderReflectionCreate, IRShaderReflectionGetResourceCount,
+        IRShaderReflectionGetResourceLocations, IRShaderStage,
+        IRShaderStage_IRShaderStageAmplification, IRShaderStage_IRShaderStageCompute,
+        IRShaderStage_IRShaderStageFragment, IRShaderStage_IRShaderStageMesh,
+        IRShaderStage_IRShaderStageVertex,
     },
 };
 use objc2::{rc::Retained, runtime::ProtocolObject};
@@ -57,7 +63,7 @@ pub fn compile(
     Retained<ProtocolObject<dyn MTLFunction>>,
 ) {
     let data = fs::read_to_string(path).unwrap();
-    let dxil_code = compile_hlsl(path, &data, entry_point, kind.into(), &[], &[]).unwrap();
+    let dxil_code = compile_hlsl(path, &data, entry_point, kind.into(), &["-Zi"], &[]).unwrap();
 
     unsafe {
         let entry_point_cstr = CString::new(entry_point).unwrap();
@@ -83,12 +89,36 @@ pub fn compile(
             panic!("IRCompilerAllocCompileAndLink failed");
         }
 
+        let ir_shader_stage = kind.ir_shader_stage();
+
         let metal_lib = sys::IRMetalLibBinaryCreate();
-        sys::IRObjectGetMetalLibBinary(out_ir, kind.ir_shader_stage(), metal_lib);
+        sys::IRObjectGetMetalLibBinary(out_ir, ir_shader_stage, metal_lib);
         let size = sys::IRMetalLibGetBytecodeSize(metal_lib);
         let mut bytecode = vec![0; size];
         sys::IRMetalLibGetBytecode(metal_lib, bytecode.as_mut_ptr());
 
+        //Reflection
+        let reflection = IRShaderReflectionCreate();
+        if !IRObjectGetReflection(out_ir, ir_shader_stage, reflection) {
+            panic!("IRObjectGetReflection failed");
+        }
+
+        let count = IRShaderReflectionGetResourceCount(reflection);
+        let mut locations = Vec::with_capacity(count);
+        IRShaderReflectionGetResourceLocations(reflection, locations.as_mut_ptr());
+        locations.set_len(count);
+
+        for location in locations {
+            if !location.resourceName.is_null() {
+                let name = CStr::from_ptr(location.resourceName).to_str().unwrap();
+                println!("{}", name);
+            }
+
+            println!("{:?}", location);
+            println!("-----------------------");
+        }
+
+        sys::IRShaderReflectionDestroy(reflection);
         sys::IRMetalLibBinaryDestroy(metal_lib);
         sys::IRObjectDestroy(dxil);
         sys::IRObjectDestroy(out_ir);

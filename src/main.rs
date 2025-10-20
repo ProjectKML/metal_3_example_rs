@@ -3,9 +3,8 @@ mod mesh;
 mod shader_compiler;
 mod texture;
 
-use std::{fs, mem, ptr::NonNull};
+use std::{mem, ptr::NonNull};
 
-use dispatch2::{dispatch_block_t, DispatchData};
 use dolly::glam::{Mat4, Vec3};
 use objc2::{
     ffi::NSUInteger,
@@ -13,7 +12,6 @@ use objc2::{
     runtime::{MessageReceiver, ProtocolObject},
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::NSString;
 use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCompareFunction,
     MTLCreateSystemDefaultDevice, MTLDepthStencilDescriptor, MTLDevice, MTLDrawable, MTLLibrary,
@@ -32,7 +30,12 @@ use sdl3::{
     },
 };
 
-use crate::{free_cam::FreeCam, mesh::MeshBuffers, texture::ModelTexture};
+use crate::{
+    free_cam::FreeCam,
+    mesh::MeshBuffers,
+    shader_compiler::{compile, ShaderKind},
+    texture::ModelTexture,
+};
 
 #[repr(C)]
 struct UniformData {
@@ -97,24 +100,18 @@ fn main() {
             layer.setPresentsWithTransaction(false);
             layer.setDrawableSize(CGSize::new(window.size().0 as _, window.size().1 as _));
 
-            let library_content = fs::read("shaders.metallib").unwrap();
-
-            let library = device
-                .newLibraryWithData_error(&DispatchData::new(
-                    NonNull::new(library_content.as_ptr() as _).unwrap(),
-                    library_content.len(),
-                    None,
-                    dispatch_block_t::default(),
-                ))
-                .unwrap();
-
-            let mesh = library
-                .newFunctionWithName(&NSString::from_str("mesh_function"))
-                .unwrap();
-
-            let frag = library
-                .newFunctionWithName(&NSString::from_str("fragment_function"))
-                .unwrap();
+            let (_, mesh) = compile(
+                &device,
+                "shaders/geometry.hlsl",
+                "geometry_mesh",
+                ShaderKind::Mesh,
+            );
+            let (_, frag) = compile(
+                &device,
+                "shaders/geometry.hlsl",
+                "geometry_pixel",
+                ShaderKind::Fragment,
+            );
 
             let pipeline_state_desc = MTLMeshRenderPipelineDescriptor::new();
             pipeline_state_desc
