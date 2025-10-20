@@ -66,7 +66,7 @@ void geometry_mesh(out vertices MeshOutput output_vertices[64],
                    out indices uint3 output_triangles[124],
                    uint3 gtid : SV_GroupThreadID,
                    uint3 gid : SV_GroupID) {
-    const uint meshlet_index = gid.x >> 5;
+    const uint meshlet_index = gid.x;
 
     const Meshlet meshlet = meshlets[meshlet_index];
 
