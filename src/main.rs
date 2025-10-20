@@ -1,5 +1,6 @@
 mod free_cam;
 mod mesh;
+mod shader_compiler;
 mod texture;
 
 use std::{fs, mem, ptr::NonNull};
