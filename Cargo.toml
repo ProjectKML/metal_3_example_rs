@@ -3,8 +3,6 @@ name = "metal_3_example"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 anyhow = "1.0.76"
 bytemuck = "1.14.0"
@@ -13,7 +11,6 @@ dolly = "0.4.2"
 fast-obj = { git = "https://github.com/projectkml/fast-obj-rs" }
 hassle-rs = "0.12.0"
 image = "0.24.7"
-objc = "0.2.7"
 glam = "0.25.0"
 objc2 = { version = "0.6.3", features = [] }
 objc2-core-foundation = "0.3.2"
